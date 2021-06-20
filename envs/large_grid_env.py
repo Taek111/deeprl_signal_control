@@ -2,12 +2,14 @@
 Particular class of large traffic grid
 @author: Tianshu Chu
 """
+import os, sys
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
 import configparser
 import logging
 import numpy as np
 import matplotlib.pyplot as plt
-import os
+
 import seaborn as sns
 import time
 from envs.env import PhaseMap, PhaseSet, TrafficSimulator
@@ -272,15 +274,21 @@ if __name__ == '__main__':
     ob = env.reset()
     controller = LargeGridController(env.node_names)
     rewards = []
-    while True:
+    it = 0
+    while True and it < 10:
+        it += 1
+        print("observation\n")
+        print(ob)
+        print("length of observation", len(ob))
         next_ob, _, done, reward = env.step(controller.forward(ob))
         rewards.append(reward)
         if done:
             break
         ob = next_ob
-    env.plot_stat(np.array(rewards))
-    logging.info('avg reward: %.2f' % np.mean(rewards))
-    env.terminate()
-    time.sleep(2)
-    env.collect_tripinfo()
-    env.output_data()
+
+    # env.plot_stat(np.array(rewards))
+    # logging.info('avg reward: %.2f' % np.mean(rewards))
+    # env.terminate()
+    # time.sleep(2)
+    # env.collect_tripinfo()
+    # env.output_data()

@@ -66,6 +66,7 @@ class Node:
         # self.edges_in = []  # for reward
         self.lanes_in = []
         self.ilds_in = [] # for state
+        self.secondary_ilds = dict()
         self.fingerprint = [] # local policy
         self.name = name
         self.neighbor = neighbor
@@ -96,7 +97,7 @@ class TrafficSimulator:
         self.cur_episode = 0
         self.norms = {'wave': config.getfloat('norm_wave'),
                       'wait': config.getfloat('norm_wait')}
-        self.clips = {'wave': config.getfloat('clip_wave'),
+        self.clips = {'wave': config.getfloat('clip_wave'), 
                       'wait': config.getfloat('clip_wait')}
         self.coef_wait = config.getfloat('coef_wait')
         self.train_mode = True
@@ -165,7 +166,7 @@ class TrafficSimulator:
         state = []
         # measure the most recent state
         self._measure_state_step()
-
+        
         # get the appropriate state vectors
         for node_name in self.node_names:
             node = self.nodes[node_name]
@@ -195,6 +196,7 @@ class TrafficSimulator:
                         cur_state.append(self.nodes[nnode_name].fingerprint)
                 state.append(np.concatenate(cur_state))
 
+
         if self.agent == 'a2c':
             state = np.concatenate(state)
 
@@ -216,6 +218,7 @@ class TrafficSimulator:
                                     neighbor=neighbor,
                                     control=True)
             # controlled lanes: l:j,i_k
+            
             lanes_in = self.sim.trafficlight.getControlledLanes(node_name)
             nodes[node_name].lanes_in = lanes_in
             # controlled edges: e:j,i
@@ -228,6 +231,11 @@ class TrafficSimulator:
                     ilds_in.append(ild_name)
             # nodes[node_name].edges_in = edges_in
             nodes[node_name].ilds_in = ilds_in
+            if self.name == 'seoul':
+                for ild in nodes[node_name].ilds_in:
+                    if ild in self.secondary_ilds_map:
+                        nodes[node_name].secondary_ilds[ild] = self.secondary_ilds_map[ild]
+
         self.nodes = nodes
         self.node_names = sorted(list(nodes.keys()))
         s = 'Env: init %d node information:\n' % len(self.node_names)
@@ -237,6 +245,8 @@ class TrafficSimulator:
             # s += '\tlanes_in: %r\n' % node.lanes_in
             s += '\tilds_in: %r\n' % node.ilds_in
             # s += '\tedges_in: %r\n' % node.edges_in
+            if self.name == 'seoul':
+             s += '\tsecondary_ilds_in: %r\n' % node.secondary_ilds
         logging.info(s)
         self._init_action_space()
         self._init_state_space()
@@ -258,6 +268,7 @@ class TrafficSimulator:
         self.neighbor_map = None
         self.phase_map = None
         self.state_names = None
+        self.secondary_ilds_map = None
         raise NotImplementedError()
 
     def _init_policy(self):
@@ -333,6 +344,9 @@ class TrafficSimulator:
                         cur_queue = min(10, self.sim.lane.getLastStepHaltingNumber(ild))
                     else:
                         cur_queue = self.sim.lanearea.getLastStepHaltingNumber(ild)
+                        if self.name == 'seoul':
+                            if ild in self.nodes[node_name].secondary_ilds:
+                                    cur_queue += self.sim.lanearea.getLastStepHaltingNumber(self.secondary_ilds_map[ild])
                     queues.append(cur_queue)
                 if self.obj in ['wait', 'hybrid']:
                     max_pos = 0
@@ -377,6 +391,10 @@ class TrafficSimulator:
                             cur_wave = self.sim.lane.getLastStepVehicleNumber(ild)
                         else:
                             cur_wave = self.sim.lanearea.getLastStepVehicleNumber(ild)
+                            #Add wave of the secondary ilds lane
+                            if self.name == 'seoul':
+                                if ild in node.secondary_ilds:
+                                    cur_wave += self.sim.lanearea.getLastStepVehicleNumber(self.secondary_ilds_map[ild])
                         cur_state.append(cur_wave)
                     cur_state = np.array(cur_state)
                 else:
@@ -548,7 +566,7 @@ class TrafficSimulator:
             seed = self.seed
         else:
             seed = self.test_seeds[test_ind]
-        # self._init_sim(gui=True)
+        # self._init_sim(gui=False)
         self._init_sim(seed, gui=gui)
         self.cur_sec = 0
         self.cur_episode += 1
@@ -595,7 +613,7 @@ class TrafficSimulator:
         elif self.agent != 'ma2c':
             # global reward is shared in independent rl
             new_reward = [global_reward] * len(reward)
-            reward = np.array(new_reward)
+            # reward = np.array(new_reward)
             if self.name == 'real_net':
                 # reward normalization in env for realnet
                 reward = reward / (len(self.node_names) * REALNET_REWARD_NORM)
@@ -629,6 +647,25 @@ class TrafficSimulator:
                     new_reward.append(cur_reward / (n_node * REALNET_REWARD_NORM))
             reward = np.array(new_reward)
         return state, reward, done, global_reward
+    
+    def baseCaseStep(self):
+        self._simulate(self.control_interval_sec)
+        state = self._get_state()
+        reward = self._measure_reward_step()
+        done = False
+        if self.cur_sec >= self.episode_length_sec:
+            done = True
+        global_reward = np.sum(reward) # for fair comparison
+        if self.is_record:
+            cur_control = {'episode': self.cur_episode,
+                           'time_sec': self.cur_sec,
+                           'step': self.cur_sec / self.control_interval_sec,
+                           'action': ' ',
+                           'reward': global_reward}
+            self.control_data.append(cur_control)
+        # use local rewards in test
+        return state, reward, done, global_reward
+
 
     def update_fingerprint(self, policy):
         for node_name, pi in zip(self.node_names, policy):

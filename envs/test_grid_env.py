@@ -4,6 +4,7 @@ Particular class of small traffic network
 """
 import os, sys
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
+
 import configparser
 import logging
 import numpy as np
@@ -17,30 +18,31 @@ from small_grid.data.build_file import gen_rou_file
 
 sns.set_color_codes()
 
-SMALL_GRID_NEIGHBOR_MAP = {'nt1': ['npc', 'nt2', 'nt6'],
-                           'nt2': ['nt1', 'nt3'],
-                           'nt3': ['npc', 'nt2', 'nt4'],
-                           'nt4': ['nt3', 'nt5'],
-                           'nt5': ['npc', 'nt4', 'nt6'],
-                           'nt6': ['nt1', 'nt5']}
-
+TEST_GRID_NEIGHBOR_MAP = {'a1': ['a2', 'a3'],
+                           'a2': ['a1', 'a4'],
+                           'a3': ['a1', 'a4'],
+                           'a4': ['a3', 'a2']}
+                           
 STATE_NAMES = ['wave', 'wait']
 # map from ild order (alphabeta) to signal order (clockwise from north)
-STATE_PHASE_MAP = {'nt1': [0, 1, 2], 'nt2': [1, 0], 'nt3': [1, 0],
-                   'nt4': [1, 0], 'nt5': [1, 0], 'nt6': [1, 0]}
 
-PHASES = {2:['GGGrrrrrr', 'rrrGGGrrr', 'rrrrrrGGG']}
-class SmallGridPhase(PhaseMap):
+NODES =  {'a1': (2, ['a2', 'a3']),
+                           'a2': (2,['a1', 'a4']),
+                           'a3': (2,['a1', 'a4']),
+                           'a4': (2,['a3', 'a2'])}
+
+PHASES = {2: ['GGgrrrGGgrrr', 'rrrGGgrrrGGg']}
+class TestGridPhase(PhaseMap):
     def __init__(self):
-        two_phase = ['GGrr', 'rrGG']
-        three_phase = ['GGGrrrrrr', 'rrrGGGrrr', 'rrrrrrGGG']
-        self.phases = {2: PhaseSet(two_phase), 3: PhaseSet(three_phase)}
+        two_phase = ['GGgrrrGGgrrr', 'rrrGGgrrrGGg']
+        self.phases = {2: PhaseSet(two_phase)}
 
 
-class SmallGridController:
-    def __init__(self, node_names):
+class  TestGridController:
+    def __init__(self, node_names, nodes):
         self.name = 'greedy'
         self.node_names = node_names
+        self.nodes = nodes
 
     def forward(self, obs):
         actions = []
@@ -49,13 +51,30 @@ class SmallGridController:
         return actions
 
     def greedy(self, ob, node_name):
-        # hard code the mapping from state to number of cars
-        phases = STATE_PHASE_MAP[node_name]
-        flows = ob[:len(phases)]
-        return phases[np.argmax(flows)]
+        # get the action space
+        phases = PHASES[NODES[node_name][0]]
+        flows = []
+        node = self.nodes[node_name]
+        # get the green waves
+        for phase in phases:
+            wave = 0
+            visited_ilds = set() 
+            for i, signal in enumerate(phase):
+                if signal == 'G':
+                    # find controlled lane
+                    lane = node.lanes_in[i]
+                    # ild = 'ild:' + lane
+                    ild = lane
+                    # if it has not been counted, add the wave
+                    if ild not in visited_ilds:
+                        j = node.ilds_in.index(ild)
+                        wave += ob[j]
+                        visited_ilds.add(ild)
+            flows.append(wave)
+        return np.argmax(np.array(flows))
 
 
-class SmallGridEnv(TrafficSimulator):
+class TestGridEnv(TrafficSimulator):
     def __init__(self, config, port=0, output_path='', is_record=False, record_stat=False):
         self.num_car_hourly = config.getint('num_extra_car_per_hour')
         super().__init__(config, output_path, is_record, record_stat, port=port)
@@ -66,15 +85,12 @@ class SmallGridEnv(TrafficSimulator):
         return 2
 
     def _init_map(self):
-        self.neighbor_map = SMALL_GRID_NEIGHBOR_MAP
-        self.phase_map = SmallGridPhase()
+        self.neighbor_map = TEST_GRID_NEIGHBOR_MAP
+        self.phase_map = TestGridPhase()
         self.state_names = STATE_NAMES
 
     def _init_sim_config(self, seed):
-        return gen_rou_file(seed=seed,
-                            thread=self.sim_thread,
-                            path=self.data_path,
-                            num_car_hourly=self.num_car_hourly)
+        return "/home/taekwon/projects/deeprl_signal_control/test_grid/data/test_grid.sumocfg"
 
     def plot_stat(self, rewards):
         self.state_stat['reward'] = rewards
@@ -94,16 +110,16 @@ if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s [%(levelname)s] %(message)s',
                         level=logging.INFO)
     config = configparser.ConfigParser()
-    config.read('./config/config_test_small.ini')
+    config.read('./config/config_greedy_test.ini')
     base_dir = './output_result/'
     if not os.path.exists(base_dir):
         os.mkdir(base_dir)
-    env = SmallGridEnv(config['ENV_CONFIG'], 2, base_dir, is_record=True, record_stat=True)
+    env = TestGridEnv(config['ENV_CONFIG'], 2, base_dir, is_record=True, record_stat=True)
     ob = env.reset()
-    controller = SmallGridController(env.node_names)
+    controller = TestGridController(env.node_names, env.nodes)
     rewards = []
     it = 0
-    while True and it <10:
+    while True and it <20:
         it += 1
         next_ob, _, done, reward = env.step(controller.forward(ob))
         rewards.append(reward)

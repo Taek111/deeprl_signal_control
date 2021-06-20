@@ -165,12 +165,20 @@ class Trainer():
                 self.model.add_transition(ob, action, reward, value, done)
             else:
                 self.model.add_transition(ob, action, reward, next_ob, done)
-            # logging
+            logging
             if self.global_counter.should_log():
-                logging.info('''Training: global step %d, episode step %d,
-                                   ob: %s, a: %s, pi: %s, r: %.2f, train r: %.2f, done: %r''' %
-                             (global_step, self.cur_step,
-                              str(ob), str(action), str(policy), global_reward, np.mean(reward), done))
+                if  self.agent.endswith('a2c'):
+                    logging.info('''Training: global step %d, episode step %d,
+                                    ob: %s, a: %s, pi: %s, critic:%s, global_r: %.2f, train r: %s, done: %r''' %
+                                (global_step, self.cur_step,
+                                str(ob) , str(action), str(policy),str(value), global_reward, str(reward), done))
+                else:
+                    logging.info('''Training: global step %d, episode step %d,
+                                    ob: %s, a: %s, policy: %s, global_r: %.2f, train r: %s, done: %r''' %
+                                     (global_step, self.cur_step,
+                                str(ob) , str(action), str(policy), global_reward, str(reward), done))
+
+            
             # # termination
             # if done:
             #     self.env.terminate()
@@ -223,7 +231,7 @@ class Trainer():
                 if policy_type != 'stochastic':
                     action, _ = self.model.forward(ob)
                 else:
-                    action, _ = self.model.forward(ob, stochastic=True)
+                    action, _ = self.model.forward(ob, stochastic=True)   
             next_ob, reward, done, global_reward = self.env.step(action)
             rewards.append(global_reward)
             if done:
@@ -244,7 +252,7 @@ class Trainer():
             if self.agent.endswith('a2c'):
                 self.model.backward(R, self.summary_writer, global_step)
             else:
-                self.model.backward(self.summary_writer, global_step)
+                self.model.backward(self.summary_writer, gflobal_step)
             self.summary_writer.flush()
             if (self.global_counter.should_stop()) and (not coord.should_stop()):
                 self.env.terminate()
@@ -286,7 +294,11 @@ class Trainer():
                 rewards += cur_rewards
                 global_step = self.global_counter.cur_step
                 if self.agent.endswith('a2c'):
-                    self.model.backward(R, self.summary_writer, global_step)
+                    advs_ls = self.model.backward(R, self.summary_writer, global_step)
+                    if self.global_counter.should_log():
+                        
+                        logging.info('Advantages: %s' %
+                                    (str(advs_ls)))
                 else:
                     self.model.backward(self.summary_writer, global_step)
                 # termination
@@ -373,6 +385,69 @@ class Evaluator(Tester):
         self.demo = demo
         self.policy_type = policy_type
 
+    def perform_applicapable(self, test_ind, demo=False, policy_type='default'):
+        print("perform apllicapable")
+        ob = self.env.reset(gui=demo, test_ind=test_ind)
+        # note this done is pre-decision to reset LSTM states!
+        done = True
+        self.model.reset()
+        action_duration = np.zeros(len(ob))
+        last_action = np.zeros(len(ob))
+        rewards = []
+        print("last_action", last_action)
+        print("action_duration",action_duration)
+        while True:
+            if self.agent == 'greedy':
+                action = self.model.forward(ob)
+            elif self.agent.endswith('a2c'):
+                # policy-based on-poicy learning
+                policy = self.model.forward(ob, done, 'p')
+                if self.agent == 'ma2c':
+                    self.env.update_fingerprint(policy)
+                if self.agent == 'a2c':
+                    if policy_type != 'deterministic':
+                        action = np.random.choice(np.arange(len(policy)), p=policy)
+                    else:
+                        action = np.argmax(np.array(policy))
+                else:
+                    action = []
+                    for i, pi in enumerate(policy):
+                        print(i, pi)
+                        if policy_type != 'deterministic':
+                            action_computed = np.random.choice(np.arange(len(pi)), p=pi)
+                            print(action_computed,last_action)
+                            print(action_computed, last_action[i])
+                            if action_computed != last_action[i]:
+                                if action_duration[i] >= 20:
+                                    action.append(action_computed)
+                                    action_duration[i] = 0
+                                else:
+                                    action.append(last_action[i])
+                                    action_duration[i] += 5
+                            else:
+                                action.append(last_action[i])
+                                action_duration[i] += 5
+
+                        else:
+                            action.append(np.argmax(np.array(pi)))
+                    
+                    last_action = action
+
+            else:
+                # value-based off-policy learning
+                if policy_type != 'stochastic':
+                    action, _ = self.model.forward(ob)
+                else:
+                    action, _ = self.model.forward(ob, stochastic=True)   
+            next_ob, reward, done, global_reward = self.env.step(action)
+            rewards.append(global_reward)
+            if done:
+                break
+            ob = next_ob
+        mean_reward = np.mean(np.array(rewards))
+        std_reward = np.std(np.array(rewards))
+        return mean_reward, std_reward
+
     def run(self):
         is_record = True
         record_stats = False
@@ -381,6 +456,7 @@ class Evaluator(Tester):
         time.sleep(1)
         for test_ind in range(self.test_num):
             reward, _ = self.perform(test_ind, demo=self.demo, policy_type=self.policy_type)
+            #reward, _ = self.perform_applicapable(test_ind, demo=self.demo, policy_type=self.policy_type)
             self.env.terminate()
             logging.info('test %i, avg reward %.2f' % (test_ind, reward))
             time.sleep(2)

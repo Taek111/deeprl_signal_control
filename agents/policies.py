@@ -210,6 +210,112 @@ class FPLstmACPolicy(LstmACPolicy):
         out_val = self._build_out_net(h, out_type)
         return out_val, new_states
 
+class FPLstmACPolicyEdited(LstmACPolicy):
+    def __init__(self, n_s, n_a, n_w, n_f, n_step, n_fc_wave=128, n_fc_wait=32, n_fc_fp=32, n_lstm=64, name=None):
+        ACPolicy.__init__(self, n_a, n_s, n_step, 'fplstmedited', name) #self.name  =fplstmedited
+        self.n_lstm = n_lstm
+        self.n_fc_wave = n_fc_wave
+        self.n_fc_wait = n_fc_wait
+        self.n_fc_fp = n_fc_fp
+        self.n_w = n_w
+        self.ob_fw = tf.placeholder(tf.float32, [1, n_s + n_w + n_f]) # forward 1-step
+        self.done_fw = tf.placeholder(tf.float32, [1])
+        self.ob_bw = tf.placeholder(tf.float32, [n_step, n_s + n_w + n_f]) # backward n-step
+        self.done_bw = tf.placeholder(tf.float32, [n_step])
+        self.states = tf.placeholder(tf.float32, [2, n_lstm * 2])
+        with tf.variable_scope(self.name):
+            with tf.variable_scope('pi'):
+                self.pi_fw, pi_state = self._build_net('forward', 'pi')
+            with tf.variable_scope('v'):
+                self.v_fw, v_state = self._build_net('forward', 'v')
+            pi_state = tf.expand_dims(pi_state, 0)
+            v_state = tf.expand_dims(v_state, 0)
+            self.new_states = tf.concat([pi_state, v_state], 0)
+            with tf.variable_scope('pi', reuse=True):
+                self.pi, _ = self._build_net('backward', 'pi')
+            with tf.variable_scope('v', reuse=True):
+                self.v, _ = self._build_net('backward', 'v')
+        self._reset()
+
+    def prepare_loss(self, v_coef, max_grad_norm, alpha, epsilon):
+        self.A = tf.placeholder(tf.int32, [self.n_step])
+        self.ADV = tf.placeholder(tf.float32, [self.n_step])
+        self.R = tf.placeholder(tf.float32, [self.n_step])
+        self.entropy_coef = tf.placeholder(tf.float32, [])
+        A_sparse = tf.one_hot(self.A, self.n_a)
+        log_pi = tf.log(tf.clip_by_value(self.pi, 1e-10, 1.0))
+        entropy = -tf.reduce_sum(self.pi * log_pi, axis=1)
+        entropy_loss = -tf.reduce_mean(entropy) * self.entropy_coef
+        policy_loss = -tf.reduce_mean(tf.reduce_sum(log_pi * A_sparse, axis=1) * self.ADV)
+        value_loss = tf.reduce_mean(tf.square(self.R - self.v)) * 0.5 * v_coef
+        # self.loss = policy_loss + value_loss + entropy_loss
+        self.policy_loss = policy_loss + entropy_loss
+        self.value_loss = value_loss
+
+        variable_pi = tf.trainable_variables(scope=self.name+"/pi")
+        variable_v = tf.trainable_variables(scope=self.name+"/v")
+        grads_pi = tf.gradients(self.policy_loss, variable_pi)
+        grads_v = tf.gradients(self.value_loss, variable_v)
+        if max_grad_norm > 0:
+            grads_pi, self.grad_norm_pi = tf.clip_by_global_norm(grads_pi, max_grad_norm)
+            grads_v, self.grad_norm_v = tf.clip_by_global_norm(grads_v, max_grad_norm)
+        self.lr = tf.placeholder(tf.float32, [])
+        self.optimizer = tf.train.RMSPropOptimizer(learning_rate=self.lr, decay=alpha,
+                                                   epsilon=epsilon)
+        self._train_pi = self.optimizer.apply_gradients(list(zip(grads_pi, variable_pi)))
+        self._train_v = self.optimizer.apply_gradients(list(zip(grads_v, variable_v)))
+        # monitor training
+        if self.name.endswith('_0a'):
+            summaries = []
+            # summaries.append(tf.summary.scalar('loss/%s_entropy_loss' % self.name, entropy_loss))
+            summaries.append(tf.summary.scalar('loss/%s_policy_loss' % self.name, policy_loss))
+            summaries.append(tf.summary.scalar('loss/%s_value_loss' % self.name, value_loss))
+            # summaries.append(tf.summary.scalar('train/%s_lr' % self.name, self.lr))
+            # summaries.append(tf.summary.scalar('train/%s_entropy_beta' % self.name, self.entropy_coef))
+            summaries.append(tf.summary.scalar('train/%s_gradnorm_pi' % self.name, self.grad_norm_pi))
+            summaries.append(tf.summary.scalar('train/%s_gradnorm_v' % self.name, self.grad_norm_v))
+            self.summary = tf.summary.merge(summaries)
+
+    def _build_net(self, in_type, out_type):
+        if in_type == 'forward':
+            ob = self.ob_fw
+            done = self.done_fw
+        else:
+            ob = self.ob_bw
+            done = self.done_bw
+        if out_type == 'pi':
+            states = self.states[0]
+        else:
+            states = self.states[1]
+        h0 = fc(ob[:, :self.n_s], out_type + '_fcw', self.n_fc_wave)
+        h1 = fc(ob[:, (self.n_s + self.n_w):], out_type + '_fcf', self.n_fc_fp)
+        if self.n_w == 0:
+            h = tf.concat([h0, h1], 1)
+        else:
+            h2 = fc(ob[:, self.n_s: (self.n_s + self.n_w)], out_type + '_fct', self.n_fc_wait)
+            h = tf.concat([h0, h1, h2], 1)
+        h, new_states = lstm(h, done, states, out_type + '_lstm')
+        out_val = self._build_out_net(h, out_type)
+        return out_val, new_states
+
+    def backward(self, sess, obs, acts, dones, Rs, Advs, cur_lr, cur_beta,
+                 summary_writer=None, global_step=None):
+        if summary_writer is None:
+            ops = [self._train_pi, self._train_v]
+        else:
+            ops = [self.summary, self._train_pi, self._train_v]
+        outs = sess.run(ops,
+                        {self.ob_bw: obs,
+                         self.done_bw: dones,
+                         self.states: self.states_bw,
+                         self.A: acts,
+                         self.ADV: Advs,
+                         self.R: Rs,
+                         self.lr: cur_lr,
+                         self.entropy_coef: cur_beta})
+        self.states_bw = np.copy(self.states_fw)
+        if summary_writer is not None:
+            summary_writer.add_summary(outs[0], global_step=global_step)
 
 class FcACPolicy(ACPolicy):
     def __init__(self, n_s, n_a, n_w, n_step, n_fc_wave=128, n_fc_wait=32, n_lstm=64, name=None):

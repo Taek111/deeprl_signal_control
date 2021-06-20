@@ -43,7 +43,9 @@ class A2C:
         n_lstm = model_config.getint('num_lstm')
         if self.name == 'ma2c':
             n_fp = model_config.getint('num_fp')
-            policy = FPLstmACPolicy(n_s, n_a, n_w, n_f, self.n_step, n_fc_wave=n_fw,
+            # policy = FPLstmACPolicy(n_s, n_a, n_w, n_f, self.n_step, n_fc_wave=n_fw,
+            #                         n_fc_wait=n_ft, n_fc_fp=n_fp, n_lstm=n_lstm, name=agent_name)
+            policy = FPLstmACPolicyEdited(n_s, n_a, n_w, n_f, self.n_step, n_fc_wave=n_fw,
                                     n_fc_wait=n_ft, n_fc_fp=n_fp, n_lstm=n_lstm, name=agent_name)
         else:
             policy = LstmACPolicy(n_s, n_a, n_w, self.n_step, n_fc_wave=n_fw,
@@ -174,13 +176,18 @@ class IA2C(A2C):
     def backward(self, R_ls, summary_writer=None, global_step=None):
         cur_lr = self.lr_scheduler.get(self.n_step)
         cur_beta = self.beta_scheduler.get(self.n_step)
+
+        #Edit: Add advs_ls to check advantage
+        advs_ls = []
         for i in range(self.n_agent):
             obs, acts, dones, Rs, Advs = self.trans_buffer_ls[i].sample_transition(R_ls[i])
+            advs_ls.append(Advs)
             if i == 0:
                 self.policy_ls[i].backward(self.sess, obs, acts, dones, Rs, Advs, cur_lr, cur_beta,
                                            summary_writer=summary_writer, global_step=global_step)
             else:
                 self.policy_ls[i].backward(self.sess, obs, acts, dones, Rs, Advs, cur_lr, cur_beta)
+        return advs_ls
 
     def forward(self, obs, done, out_type='pv'):
         if len(out_type) == 1:

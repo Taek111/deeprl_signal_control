@@ -12,6 +12,8 @@ import threading
 from envs.small_grid_env import SmallGridEnv, SmallGridController
 from envs.large_grid_env import LargeGridEnv, LargeGridController
 from envs.real_net_env import RealNetEnv, RealNetController
+from envs.test_grid_env import TestGridEnv, TestGridController
+from envs.seoul_env import SeoulEnv, SeoulController
 from agents.models import A2C, IA2C, MA2C, IQL
 from utils import (Counter, Trainer, Tester, Evaluator,
                    check_dir, copy_file, find_file,
@@ -70,6 +72,23 @@ def init_env(config, port=0, naive_policy=False):
             env = RealNetEnv(config, port=port)
             policy = RealNetController(env.node_names, env.nodes)
             return env, policy
+
+    elif config.get('scenario') == 'test_grid':
+        if not naive_policy:
+            return TestGridEnv(config, port=port)
+        else:
+            env = TestGridEnv(config, port=port)
+            policy = TestGridController(env.node_names, env.nodes)
+            return env, policy
+
+    elif config.get('scenario') == 'seoul':
+        if not naive_policy:
+            return SeoulEnv(config, port=port)
+        else:
+            env = SeoulEnv(config, port=port)
+            policy = SeoulController(env.node_names, env.nodes)
+            return env, policy
+
     elif config.get('scenario') in ['Acrobot-v1', 'CartPole-v0', 'MountainCar-v0']:
         return GymEnv(config.get('scenario'))
     else:
